@@ -50,6 +50,7 @@ for f in \
     001_create_phonebook.sql \
     002_create_phonebook_auth.sql \
     005_phonebook_auth_password.sql \
+    006_phonebook_auth_password_hash_nullable.sql \
     004_add_permissions.sql \
     003_add_menu_item.sql
 do

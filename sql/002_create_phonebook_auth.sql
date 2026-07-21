@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS v_phonebook_auth (
     phonebook_auth_uuid  uuid         NOT NULL DEFAULT gen_random_uuid(),
     domain_uuid          uuid         NOT NULL,
     username             text         NOT NULL,
-    password_hash        text         NOT NULL,
+    password_hash        text,   -- legacy/optional; readable password added in migration 005
     enabled              boolean      NOT NULL DEFAULT true,
     insert_date          timestamptz  NOT NULL DEFAULT now(),
     update_date          timestamptz,

@@ -14,10 +14,9 @@
 --
 -- After running, users must log out and back in (the menu is built at login).
 --
--- NOTE on groups: this grants menu visibility to `superadmin` only, matching
--- the permissions currently assigned. When domain admins are given the
--- phonebook permissions (admin group), add the admin group here too so the
--- menu and permissions stay in step.
+-- NOTE on groups: grants menu visibility to `superadmin` and `admin`, matching
+-- the permissions granted in migration 004 (admin manages their own domain;
+-- superadmin manages across all). `user` is intentionally excluded.
 -- ============================================================================
 
 BEGIN;
@@ -47,6 +46,6 @@ new_item AS (
 INSERT INTO v_menu_item_groups (menu_item_group_uuid, menu_uuid, menu_item_uuid, group_name, group_uuid)
 SELECT gen_random_uuid(), n.menu_uuid, n.menu_item_uuid, g.group_name, g.group_uuid
 FROM new_item n
-JOIN v_groups g ON g.group_name = 'superadmin' AND g.domain_uuid IS NULL;
+JOIN v_groups g ON g.group_name IN ('superadmin', 'admin') AND g.domain_uuid IS NULL;
 
 COMMIT;

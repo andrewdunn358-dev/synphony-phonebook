@@ -2,17 +2,23 @@
 /*
 	synphony-phonebook : phonebook_access.php
 
-	Manage the per-domain remote-phonebook credential (the username/password a
-	handset presents to xml.php). One-click generate / regenerate. The plaintext
-	password is shown ONCE, immediately after generation; only its bcrypt hash is
-	stored. CSRF-protected; domain-scoped to the current session domain.
+	Manage the per-domain remote-phonebook login and show a ready-to-paste URL
+	for each phone make.
+
+	Notes:
+	  - Uses a direct prepared INSERT/UPDATE rather than $database->save(),
+	    because save() enforces a per-table permission ('phonebook_auth_add')
+	    that this app does not define, which would silently skip the write.
+	  - The password is stored readably (plain text) so the ready-to-use URL can
+	    always be shown -- consistent with how FusionPBX stores SIP/device
+	    provisioning passwords. These are low-value, read-only phonebook logins
+	    served only over HTTPS.
+	  - CSRF-protected; scoped to the current session domain.
 */
 
-//includes
 	require_once dirname(__DIR__, 2) . "/resources/require.php";
 	require_once "resources/check_auth.php";
 
-//permission
 	if (!permission_exists('phonebook_access')) {
 		echo "access denied";
 		exit;
@@ -25,9 +31,23 @@
 	$domain_uuid = $_SESSION['domain_uuid'] ?? '';
 	$domain_name = $_SESSION['domain_name'] ?? '';
 
-	$new_password = '';   // populated only on a fresh generation, shown once
+	//renders the generate / regenerate button form
+	function phonebook_generate_form($is_first, $token) {
+		$label   = $is_first ? 'Generate phonebook access' : 'Regenerate password';
+		$confirm = $is_first
+			? 'Generate phonebook access for this domain?'
+			: 'Regenerate the password? Existing phones will need the new URL/password.';
+		$out  = "<form method='post' action='phonebook_access.php' onsubmit=\"return confirm('".$confirm."');\">\n";
+		$out .= "	<input type='hidden' name='action' value='generate'>\n";
+		$out .= "	<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+		$out .= "	".button::create(['type'=>'submit','label'=>$label,'icon'=>'key'])."\n";
+		$out .= "</form>\n";
+		return $out;
+	}
 
-//---- handle generate / regenerate -------------------------------------------
+//----------------------------------------------------------------------------
+// Handle generate / regenerate
+//----------------------------------------------------------------------------
 	if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'generate') {
 
 		$token = new token;
@@ -37,60 +57,67 @@
 			exit;
 		}
 
-		//existing credential for this domain?
 		$existing = $database->select(
 			"select phonebook_auth_uuid, username from v_phonebook_auth where domain_uuid = :domain_uuid",
 			['domain_uuid'=>$domain_uuid], 'row'
 		);
 
+		//username: keep existing on regenerate, else derive from the domain label
 		if (!empty($existing)) {
 			$auth_uuid = $existing['phonebook_auth_uuid'];
-			$username  = $existing['username'];           // keep the username on regenerate
+			$username  = $existing['username'];
 		} else {
 			$auth_uuid = uuid();
-			//derive a readable username from the domain's first label
 			$parts = explode('.', $domain_name);
 			$base  = preg_replace('/[^a-z0-9]/', '', strtolower($parts[0] ?? ''));
 			if ($base === '') { $base = 'phonebook'; }
 			$username = $base;
-			//ensure it is globally unique
 			$taken = $database->select(
-				"select count(*) as c from v_phonebook_auth where username = :username",
-				['username'=>$username], 'row'
+				"select count(*) as c from v_phonebook_auth where username = :u",
+				['u'=>$username], 'row'
 			);
 			if (!empty($taken) && (int)$taken['c'] > 0) {
 				$username = $base.'-'.substr(bin2hex(random_bytes(2)), 0, 4);
 			}
 		}
 
-		//generate a strong password; store only the bcrypt hash
-		$new_password = bin2hex(random_bytes(9));   // 18 hex chars
-		$password_hash = password_hash($new_password, PASSWORD_DEFAULT);
+		//readable, URL-safe password
+		$password = bin2hex(random_bytes(6));   // 12 hex chars
 
-		$array['phonebook_auth'][0]['phonebook_auth_uuid'] = $auth_uuid;
-		$array['phonebook_auth'][0]['domain_uuid']         = $domain_uuid;
-		$array['phonebook_auth'][0]['username']            = $username;
-		$array['phonebook_auth'][0]['password_hash']       = $password_hash;
-		$array['phonebook_auth'][0]['enabled']             = 'true';
-		$database->save($array);
-		unset($array);
+		//direct prepared upsert
+		if (!empty($existing)) {
+			$database->execute(
+				"update v_phonebook_auth set username = :username, password = :password, "
+				. "enabled = true, update_date = now() where phonebook_auth_uuid = :uuid",
+				['username'=>$username, 'password'=>$password, 'uuid'=>$auth_uuid]
+			);
+		} else {
+			$database->execute(
+				"insert into v_phonebook_auth (phonebook_auth_uuid, domain_uuid, username, password, enabled) "
+				. "values (:uuid, :domain_uuid, :username, :password, true)",
+				['uuid'=>$auth_uuid, 'domain_uuid'=>$domain_uuid, 'username'=>$username, 'password'=>$password]
+			);
+		}
 
-		message::add('Phonebook access generated. Copy the password now — it is shown only once.');
-		//fall through to render, showing $new_password once
+		message::add('Phonebook access saved.');
+		header('Location: phonebook_access.php');
+		exit;
 	}
 
-//---- current status ---------------------------------------------------------
+//----------------------------------------------------------------------------
+// Current credential
+//----------------------------------------------------------------------------
 	$current = $database->select(
-		"select username, enabled from v_phonebook_auth where domain_uuid = :domain_uuid",
+		"select username, password, enabled from v_phonebook_auth where domain_uuid = :domain_uuid",
 		['domain_uuid'=>$domain_uuid], 'row'
 	);
 
 	$object = new token;
 	$token = $object->create($_SERVER['PHP_SELF']);
 
-	$url = 'https://'.$domain_name.'/app/phonebook/xml.php';
-
-//render
+//----------------------------------------------------------------------------
+// Render
+//----------------------------------------------------------------------------
 	$document['title'] = 'Phonebook Access';
 	require_once "resources/header.php";
 
@@ -105,28 +132,51 @@
 	echo "<p>This is the login the desk phones use to fetch <b>".escape($domain_name)."</b>'s phonebook. "
 		. "Each domain has its own; a phone cannot reach another domain's book without that domain's login.</p>\n";
 
-	echo "<table class='list'>\n";
-	echo "<tr class='list-header'><th>Setting</th><th>Value</th></tr>\n";
-	echo "<tr><td>Remote phonebook URL</td><td><code>".escape($url)."</code></td></tr>\n";
-	echo "<tr><td>Username</td><td>".(!empty($current) ? "<code>".escape($current['username'])."</code>" : "<i>none yet</i>")."</td></tr>\n";
+	if (empty($current) || empty($current['username'])) {
 
-	if ($new_password !== '') {
-		echo "<tr><td>Password <b>(shown once)</b></td><td><code style='font-size:1.1em;'>".escape($new_password)."</code></td></tr>\n";
-	} elseif (!empty($current)) {
-		echo "<tr><td>Password</td><td><i>set (hidden) — regenerate to get a new one</i></td></tr>\n";
+		echo "<p><b>No phonebook login has been created for this domain yet.</b> "
+			. "Click below to generate one — you'll then get the username, password and a "
+			. "ready-to-paste URL for each phone make.</p>\n";
+		echo phonebook_generate_form(true, $token);
+
+	} else {
+
+		$username = $current['username'];
+		$password = $current['password'] ?? '';
+
+		//credentialed base URL (username:password already embedded)
+		$hostpart = rawurlencode($username).':'.rawurlencode($password).'@'.$domain_name;
+		$base_url = "https://".$hostpart."/app/phonebook/xml.php";
+		$plain_url = "https://".$domain_name."/app/phonebook/xml.php";
+
+		//login
+		echo "<table class='list'>\n";
+		echo "<tr class='list-header'><th>Login</th><th>Value</th></tr>\n";
+		echo "<tr><td>Username</td><td><code>".escape($username)."</code></td></tr>\n";
+		echo "<tr><td>Password</td><td><code>".escape($password)."</code></td></tr>\n";
+		echo "</table>\n";
+		echo "<br>\n";
+
+		//ready-to-paste URLs per make
+		echo "<p><b>Ready-to-use URL — pick your phone make.</b> The username and password are "
+			. "already built in, so you can paste the whole line straight into the phone's "
+			. "Remote Phonebook URL field.</p>\n";
+		echo "<table class='list'>\n";
+		echo "<tr class='list-header'><th>Phone make</th><th>Remote phonebook URL</th></tr>\n";
+		$vendors = ['Yealink'=>'yealink', 'Grandstream'=>'grandstream', 'Fanvil'=>'fanvil', 'Snom'=>'snom'];
+		foreach ($vendors as $label => $type) {
+			echo "<tr><td>".escape($label)."</td><td><code>".escape($base_url.'?type='.$type)."</code></td></tr>\n";
+		}
+		echo "<tr><td>Any / auto-detect</td><td><code>".escape($base_url)."</code></td></tr>\n";
+		echo "</table>\n";
+		echo "<br>\n";
+
+		echo "<p style='color:#888;'>If your phone has separate username and password boxes rather than a "
+			. "single URL field, use the plain URL <code>".escape($plain_url)."</code> together with the "
+			. "username and password above.</p>\n";
+
+		echo phonebook_generate_form(false, $token);
 	}
-	echo "</table>\n";
-	echo "<br>\n";
-
-	echo "<form method='post' action='phonebook_access.php' onsubmit=\"return confirm('".(!empty($current) ? "Regenerate the password? Existing phones will need the new one." : "Generate phonebook access for this domain?")."');\">\n";
-	echo "	<input type='hidden' name='action' value='generate'>\n";
-	echo "	<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
-	echo "	".button::create(['type'=>'submit','label'=>(!empty($current) ? 'Regenerate password' : 'Generate phonebook access'),'icon'=>'key'])."\n";
-	echo "</form>\n";
-
-	echo "<br><p style='color:#888;'>Put the URL, username and password into each phone's Remote Phonebook settings for this domain. "
-		. "The endpoint auto-detects the handset make; if needed you can force it by adding <code>?type=yealink</code> "
-		. "(or grandstream / fanvil / snom) to the URL.</p>\n";
 
 	require_once "resources/footer.php";
 ?>

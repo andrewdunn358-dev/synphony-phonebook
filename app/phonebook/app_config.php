@@ -119,7 +119,11 @@
 	$z++;
 	$apps[$x]['db'][$y]['fields'][$z]['name'] = "password_hash";
 	$apps[$x]['db'][$y]['fields'][$z]['type'] = "text";
-	$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "bcrypt hash of the login password.";
+	$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "Legacy bcrypt hash (unused; kept for back-compat).";
+	$z++;
+	$apps[$x]['db'][$y]['fields'][$z]['name'] = "password";
+	$apps[$x]['db'][$y]['fields'][$z]['type'] = "text";
+	$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "Remote-phonebook login password.";
 	$z++;
 	$apps[$x]['db'][$y]['fields'][$z]['name'] = "enabled";
 	$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "boolean";

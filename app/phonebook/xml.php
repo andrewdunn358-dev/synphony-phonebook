@@ -68,19 +68,26 @@
 //----------------------------------------------------------------------------
 	$database = new database;
 
-	$sql = "select domain_uuid, password_hash "
+	$sql = "select domain_uuid, password, password_hash "
 		. "from v_phonebook_auth "
 		. "where username = :username and enabled = true";
 	$parameters = ['username' => $auth_user];
 	$row = $database->select($sql, $parameters, 'row');
 
-	if (empty($row) || empty($row['password_hash'])) {
-		// Run a dummy verify so a missing username takes about the same time as
-		// a wrong password (reduces username-enumeration by timing).
-		password_verify($auth_pw, '$2y$10$usesomesillystringforsalt2e9V6uJ9Xz9Y3nBw1p3lqcq9uK9m6');
-		phonebook_unauthorized();
+	// Accept the readable password (current) or fall back to a bcrypt hash
+	// (legacy credentials created before migration 005).
+	$auth_ok = false;
+	if (!empty($row)) {
+		if (isset($row['password']) && $row['password'] !== null && $row['password'] !== '') {
+			$auth_ok = hash_equals((string)$row['password'], (string)$auth_pw);
+		} elseif (!empty($row['password_hash'])) {
+			$auth_ok = password_verify($auth_pw, $row['password_hash']);
+		}
+	} else {
+		// Constant-ish time for a missing username (blunts enumeration by timing).
+		hash_equals('0000000000000000', (string)$auth_pw);
 	}
-	if (!password_verify($auth_pw, $row['password_hash'])) {
+	if (!$auth_ok) {
 		phonebook_unauthorized();
 	}
 	$domain_uuid = $row['domain_uuid'];

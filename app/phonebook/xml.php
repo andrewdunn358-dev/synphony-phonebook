@@ -1,0 +1,153 @@
+<?php
+/*
+	synphony-phonebook : xml.php
+
+	Public remote-phonebook endpoint. A desk phone fetches this URL and presents
+	a per-domain HTTP Basic credential. The endpoint verifies the credential,
+	resolves the domain it belongs to, and returns vendor-specific remote-
+	phonebook XML containing ONLY that domain's contacts.
+
+	Security notes:
+	  - Database access uses FusionPBX's database class (PDO prepared
+	    statements, bound parameters) — no string-built SQL.
+	  - The password is verified with password_verify() against a bcrypt hash.
+	  - Every value written into the XML is escaped.
+	  - No portal session is required (phones cannot log in); the per-domain
+	    credential IS the access boundary, so one tenant cannot read another's.
+
+	MIT licensed. See repo root.
+*/
+
+//----------------------------------------------------------------------------
+// Bootstrap FusionPBX (same pattern as app/provision): gives us the database
+// class and config without enforcing a portal login.
+//----------------------------------------------------------------------------
+	require_once dirname(__DIR__, 2) . "/resources/require.php";
+
+//----------------------------------------------------------------------------
+// Helpers
+//----------------------------------------------------------------------------
+	function phonebook_unauthorized() {
+		header('WWW-Authenticate: Basic realm="Phonebook"');
+		header('HTTP/1.1 401 Unauthorized');
+		header('Content-Type: text/plain; charset=utf-8');
+		echo "Authentication required.\n";
+		exit;
+	}
+
+	// XML-escape a value for safe inclusion in element text.
+	function pb_x($s) {
+		return htmlspecialchars((string)$s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+	}
+
+//----------------------------------------------------------------------------
+// Read HTTP Basic credentials. PHP-FPM behind nginx does not always populate
+// PHP_AUTH_USER, so fall back to parsing the raw Authorization header.
+//----------------------------------------------------------------------------
+	$auth_user = $_SERVER['PHP_AUTH_USER'] ?? null;
+	$auth_pw   = $_SERVER['PHP_AUTH_PW'] ?? null;
+
+	if ($auth_user === null) {
+		$header = $_SERVER['HTTP_AUTHORIZATION']
+			?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+			?? '';
+		if (stripos($header, 'Basic ') === 0) {
+			$decoded = base64_decode(substr($header, 6), true);
+			if ($decoded !== false && strpos($decoded, ':') !== false) {
+				list($auth_user, $auth_pw) = explode(':', $decoded, 2);
+			}
+		}
+	}
+
+	if (empty($auth_user) || $auth_pw === null || $auth_pw === '') {
+		phonebook_unauthorized();
+	}
+
+//----------------------------------------------------------------------------
+// Look up the credential (prepared statement) and verify the password.
+//----------------------------------------------------------------------------
+	$database = new database;
+
+	$sql = "select domain_uuid, password_hash "
+		. "from v_phonebook_auth "
+		. "where username = :username and enabled = true";
+	$parameters = ['username' => $auth_user];
+	$row = $database->select($sql, $parameters, 'row');
+
+	if (empty($row) || empty($row['password_hash'])) {
+		// Run a dummy verify so a missing username takes about the same time as
+		// a wrong password (reduces username-enumeration by timing).
+		password_verify($auth_pw, '$2y$10$usesomesillystringforsalt2e9V6uJ9Xz9Y3nBw1p3lqcq9uK9m6');
+		phonebook_unauthorized();
+	}
+	if (!password_verify($auth_pw, $row['password_hash'])) {
+		phonebook_unauthorized();
+	}
+	$domain_uuid = $row['domain_uuid'];
+
+//----------------------------------------------------------------------------
+// Decide the output format. Prefer an explicit &type= (whitelisted); otherwise
+// sniff the User-Agent; default to Yealink.
+//----------------------------------------------------------------------------
+	$allowed = ['yealink', 'grandstream', 'fanvil', 'snom'];
+	$type = strtolower($_REQUEST['type'] ?? '');
+	if (!in_array($type, $allowed, true)) {
+		$ua = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
+		if (strpos($ua, 'grandstream') !== false)   { $type = 'grandstream'; }
+		elseif (strpos($ua, 'fanvil') !== false)     { $type = 'fanvil'; }
+		elseif (strpos($ua, 'snom') !== false)       { $type = 'snom'; }
+		else                                         { $type = 'yealink'; }
+	}
+
+//----------------------------------------------------------------------------
+// Fetch this domain's enabled contacts (prepared statement).
+//----------------------------------------------------------------------------
+	$sql = "select contact_name, contact_organization, phone_number, phone_number2 "
+		. "from v_phonebook "
+		. "where domain_uuid = :domain_uuid and enabled = true "
+		. "order by contact_name asc";
+	$parameters = ['domain_uuid' => $domain_uuid];
+	$contacts = $database->select($sql, $parameters, 'all');
+	if (!is_array($contacts)) {
+		$contacts = [];
+	}
+
+	// Build a display name (append organisation in brackets when present).
+	function pb_display_name($c) {
+		$name = $c['contact_name'] ?? '';
+		if (!empty($c['contact_organization'])) {
+			$name .= ' (' . $c['contact_organization'] . ')';
+		}
+		return $name;
+	}
+
+//----------------------------------------------------------------------------
+// Emit the XML.
+//----------------------------------------------------------------------------
+	switch ($type) {
+
+		case 'yealink':
+		default:
+			header('Content-Type: text/xml; charset=utf-8');
+			echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+			echo "<YealinkIPPhoneDirectory>\n";
+			echo "  <Title>Phonebook</Title>\n";
+			foreach ($contacts as $c) {
+				echo "  <DirectoryEntry>\n";
+				echo "    <Name>" . pb_x(pb_display_name($c)) . "</Name>\n";
+				if (isset($c['phone_number']) && $c['phone_number'] !== '') {
+					echo "    <Telephone>" . pb_x($c['phone_number']) . "</Telephone>\n";
+				}
+				if (!empty($c['phone_number2'])) {
+					echo "    <Telephone>" . pb_x($c['phone_number2']) . "</Telephone>\n";
+				}
+				echo "  </DirectoryEntry>\n";
+			}
+			echo "</YealinkIPPhoneDirectory>\n";
+			break;
+
+		// Grandstream, Fanvil and Snom formatters are added next, once the
+		// Yealink path is confirmed working end to end. Each is a new `case`
+		// that reads the same $contacts array and emits that vendor's dialect.
+
+	}

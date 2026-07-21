@@ -131,30 +131,66 @@
 //----------------------------------------------------------------------------
 // Emit the XML.
 //----------------------------------------------------------------------------
+	// Yealink, Fanvil and Snom share one structure (DirectoryEntry / Name /
+	// Telephone); only the root element differs. Grandstream is separate.
+	function pb_emit_directory($contacts, $root) {
+		header('Content-Type: text/xml; charset=utf-8');
+		echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+		echo "<".$root.">\n";
+		echo "  <Title>Phonebook</Title>\n";
+		foreach ($contacts as $c) {
+			echo "  <DirectoryEntry>\n";
+			echo "    <Name>" . pb_x(pb_display_name($c)) . "</Name>\n";
+			if (isset($c['phone_number']) && $c['phone_number'] !== '') {
+				echo "    <Telephone>" . pb_x($c['phone_number']) . "</Telephone>\n";
+			}
+			if (!empty($c['phone_number2'])) {
+				echo "    <Telephone>" . pb_x($c['phone_number2']) . "</Telephone>\n";
+			}
+			echo "  </DirectoryEntry>\n";
+		}
+		echo "</".$root.">\n";
+	}
+
 	switch ($type) {
+
+		case 'grandstream':
+			header('Content-Type: text/xml; charset=utf-8');
+			echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+			echo "<AddressBook>\n";
+			echo "  <version>1</version>\n";
+			foreach ($contacts as $c) {
+				echo "  <Contact>\n";
+				echo "    <FirstName>" . pb_x(pb_display_name($c)) . "</FirstName>\n";
+				echo "    <LastName></LastName>\n";
+				if (isset($c['phone_number']) && $c['phone_number'] !== '') {
+					echo "    <Phone type=\"Work\">\n";
+					echo "      <phonenumber>" . pb_x($c['phone_number']) . "</phonenumber>\n";
+					echo "      <accountindex>0</accountindex>\n";
+					echo "    </Phone>\n";
+				}
+				if (!empty($c['phone_number2'])) {
+					echo "    <Phone type=\"Mobile\">\n";
+					echo "      <phonenumber>" . pb_x($c['phone_number2']) . "</phonenumber>\n";
+					echo "      <accountindex>0</accountindex>\n";
+					echo "    </Phone>\n";
+				}
+				echo "  </Contact>\n";
+			}
+			echo "</AddressBook>\n";
+			break;
+
+		case 'fanvil':
+			pb_emit_directory($contacts, 'FanvilIPPhoneDirectory');
+			break;
+
+		case 'snom':
+			pb_emit_directory($contacts, 'SnomIPPhoneDirectory');
+			break;
 
 		case 'yealink':
 		default:
-			header('Content-Type: text/xml; charset=utf-8');
-			echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
-			echo "<YealinkIPPhoneDirectory>\n";
-			echo "  <Title>Phonebook</Title>\n";
-			foreach ($contacts as $c) {
-				echo "  <DirectoryEntry>\n";
-				echo "    <Name>" . pb_x(pb_display_name($c)) . "</Name>\n";
-				if (isset($c['phone_number']) && $c['phone_number'] !== '') {
-					echo "    <Telephone>" . pb_x($c['phone_number']) . "</Telephone>\n";
-				}
-				if (!empty($c['phone_number2'])) {
-					echo "    <Telephone>" . pb_x($c['phone_number2']) . "</Telephone>\n";
-				}
-				echo "  </DirectoryEntry>\n";
-			}
-			echo "</YealinkIPPhoneDirectory>\n";
+			pb_emit_directory($contacts, 'YealinkIPPhoneDirectory');
 			break;
-
-		// Grandstream, Fanvil and Snom formatters are added next, once the
-		// Yealink path is confirmed working end to end. Each is a new `case`
-		// that reads the same $contacts array and emits that vendor's dialect.
 
 	}

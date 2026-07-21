@@ -53,7 +53,9 @@ for f in \
     003_add_menu_item.sql
 do
     echo "==> applying sql/$f"
-    sudo -u postgres psql -d "$DB" -v ON_ERROR_STOP=1 -q -f "$REPO_DIR/sql/$f"
+    # Pipe the file via stdin (read by this root shell) rather than -f, so the
+    # postgres user never needs read access to the repo location (e.g. /root).
+    sudo -u postgres psql -d "$DB" -v ON_ERROR_STOP=1 -q < "$REPO_DIR/sql/$f"
 done
 
 # --- 2. deploy the application files -----------------------------------------

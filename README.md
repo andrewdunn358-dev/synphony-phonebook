@@ -54,6 +54,19 @@ design and survives FusionPBX upgrades.
   User-Agent, or forced by a `&type=` parameter set in each vendor's
   provisioning template. Adding a new make = adding one more formatter.
 
+### New-domain onboarding
+
+A new domain automatically *can* use the phonebook (the endpoint serves any
+domain by `domain_uuid`), and it starts with its **own empty book** — it never
+inherits another tenant's contacts. Before its phones can fetch anything it
+needs a credential row in `v_phonebook_auth`.
+
+Decision: **generate-on-demand from the GUI** (not automatic on domain
+creation). The phonebook page, for a domain with no credential yet, offers a
+one-click "Generate phonebook access" that mints the login and shows the
+provisioning URL. This avoids minting credentials for domains that never use
+the feature.
+
 ---
 
 ## Data model (draft — to be finalised after recon)

@@ -41,6 +41,8 @@
 			exit;
 		}
 
+		$is_new = ($id === '');
+
 		//collect + trim input
 		$contact_name         = trim($_POST['contact_name'] ?? '');
 		$contact_organization = trim($_POST['contact_organization'] ?? '');
@@ -72,16 +74,29 @@
 			$id = uuid();
 		}
 
-		//save (nested-array form; $database->save handles insert vs update)
-		$array['phonebook'][0]['phonebook_uuid']       = $id;
-		$array['phonebook'][0]['domain_uuid']          = $domain_uuid;
-		$array['phonebook'][0]['contact_name']         = $contact_name;
-		$array['phonebook'][0]['contact_organization'] = $contact_organization;
-		$array['phonebook'][0]['phone_number']         = $phone_number;
-		$array['phonebook'][0]['phone_number2']        = $phone_number2;
-		$array['phonebook'][0]['enabled']              = $enabled;
-		$database->save($array);
-		unset($array);
+		//Save via a direct prepared statement. We deliberately avoid
+		//$database->save() here: it reformats numeric-looking fields and strips
+		//a leading zero from phone numbers (e.g. 07898... -> 7898...). Prepared
+		//params store the value exactly as entered. $enabled is already strictly
+		//'true'/'false', so it is safe to inline as a boolean literal.
+		$enabled_sql = ($enabled === 'true') ? 'true' : 'false';
+		if ($is_new) {
+			$database->execute(
+				"insert into v_phonebook "
+				. "(phonebook_uuid, domain_uuid, contact_name, contact_organization, phone_number, phone_number2, enabled) "
+				. "values (:uuid, :d, :name, :org, :num, :num2, ".$enabled_sql.")",
+				['uuid'=>$id, 'd'=>$domain_uuid, 'name'=>$contact_name, 'org'=>$contact_organization,
+				 'num'=>$phone_number, 'num2'=>$phone_number2]
+			);
+		} else {
+			$database->execute(
+				"update v_phonebook set contact_name = :name, contact_organization = :org, "
+				. "phone_number = :num, phone_number2 = :num2, enabled = ".$enabled_sql.", update_date = now() "
+				. "where phonebook_uuid = :uuid and domain_uuid = :d",
+				['name'=>$contact_name, 'org'=>$contact_organization, 'num'=>$phone_number,
+				 'num2'=>$phone_number2, 'uuid'=>$id, 'd'=>$domain_uuid]
+			);
+		}
 
 		message::add('Contact saved.');
 		header('Location: phonebook.php');

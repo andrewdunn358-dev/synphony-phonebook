@@ -71,6 +71,7 @@
 		echo button::create(['type'=>'button','label'=>'Phonebook access','icon'=>'key','link'=>'phonebook_access.php']);
 	}
 	if (permission_exists('phonebook_add')) {
+		echo button::create(['type'=>'button','label'=>'Import','icon'=>'upload','link'=>'phonebook_import.php']);
 		echo button::create(['type'=>'button','label'=>'Add','icon'=>'plus','link'=>'phonebook_edit.php']);
 	}
 	echo "	</div>\n";
